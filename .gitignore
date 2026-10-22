@@ -2,5 +2,4 @@ env
 .env
 venv
 .venv
-creditcard.csv
 data/processed/
