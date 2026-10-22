@@ -4,3 +4,8 @@ scikit-learn==1.9.1
 matplotlib==3.11.2
 joblib
 ipykernel
+PyYAML>=6.0
+pydantic>=2.5
+colorama>=0.4.6
+torch>=2.1
+pytest>=8.0
