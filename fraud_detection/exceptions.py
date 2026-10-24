@@ -24,3 +24,7 @@ class TrainingError(FraudDetectionError):
 
 class ArtifactError(FraudDetectionError):
     pass
+
+
+class TuningError(FraudDetectionError):
+    pass

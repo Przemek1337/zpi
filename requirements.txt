@@ -9,3 +9,6 @@ pydantic>=2.5
 colorama>=0.4.6
 torch>=2.1
 pytest>=8.0
+optuna>=4.2
+nbclient>=0.10
+nbformat>=5.10

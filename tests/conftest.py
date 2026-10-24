@@ -31,6 +31,17 @@ def make_transaction_set(legitimate: int, fraud: int, feature_count: int = 10) -
     return TransactionSet(features=features, labels=labels, feature_names=tuple(f"f{i}" for i in range(feature_count)))
 
 
+def save_splits(path: Path, train: pd.DataFrame, validation: pd.DataFrame, test: pd.DataFrame = None) -> Path:
+    """Writes frames in the layout of data/data_preprocessing.ipynb (X_/y_ arrays plus feature_names)."""
+    feature_names = [column for column in train.columns if column != "Class"]
+    arrays = {"feature_names": np.array(feature_names)}
+    for key, frame in {"train": train, "val": validation, "test": test if test is not None else validation}.items():
+        arrays[f"X_{key}"] = frame[feature_names].to_numpy(dtype=np.float32)
+        arrays[f"y_{key}"] = frame["Class"].to_numpy(dtype=np.int64)
+    np.savez_compressed(path, **arrays)
+    return path
+
+
 @pytest.fixture(autouse=True)
 def isolated_logging():
     yield

@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import math
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
 from torch import nn, optim
@@ -18,6 +18,8 @@ from fraud_detection.training.training_history import EpochRecord, TrainingHisto
 from fraud_detection.utils.colored_logging import get_logger
 
 logger = get_logger(__name__)
+
+EpochCallback = Callable[[EpochRecord], None]
 
 
 class AutoencoderTrainer:
@@ -38,11 +40,18 @@ class AutoencoderTrainer:
         self._scheduler = scheduler
         self._loss_fn = nn.MSELoss()
 
-    def fit(self, train_loader: DataLoader, monitor: ReconstructionMonitor) -> TrainingHistory:
+    def fit(
+        self,
+        train_loader: DataLoader,
+        monitor: ReconstructionMonitor,
+        epoch_callback: Optional[EpochCallback] = None,
+    ) -> TrainingHistory:
+        """Trains until the epoch budget or early stopping; ``epoch_callback`` sees every finished epoch
+        and may raise to abort training (e.g. hyperparameter search pruning)."""
         history = TrainingHistory()
         started = time.perf_counter()
         try:
-            best_state = self._run_epochs(train_loader, monitor, history)
+            best_state = self._run_epochs(train_loader, monitor, history, epoch_callback)
         except torch.cuda.OutOfMemoryError as error:
             raise TrainingError(
                 f"GPU ran out of memory; reduce training.batch_size (currently {self._config.batch_size})"
@@ -52,7 +61,13 @@ class AutoencoderTrainer:
         logger.info("Training finished in %.1fs, best epoch %s", history.total_seconds, history.best_epoch)
         return history
 
-    def _run_epochs(self, train_loader: DataLoader, monitor: ReconstructionMonitor, history: TrainingHistory) -> dict:
+    def _run_epochs(
+        self,
+        train_loader: DataLoader,
+        monitor: ReconstructionMonitor,
+        history: TrainingHistory,
+        epoch_callback: Optional[EpochCallback],
+    ) -> dict:
         best_state = copy.deepcopy(self._model.state_dict())
         for epoch in range(1, self._config.epochs + 1):
             epoch_started = time.perf_counter()
@@ -65,6 +80,7 @@ class AutoencoderTrainer:
                 train_loss=train_loss,
                 validation_loss=snapshot.legitimate_mse,
                 validation_fraud_mse=snapshot.fraud_mse,
+                validation_fraud_recall=snapshot.fraud_recall,
                 learning_rate=self._current_learning_rate(),
                 duration_seconds=time.perf_counter() - epoch_started,
             )
@@ -75,6 +91,8 @@ class AutoencoderTrainer:
                 best_state = copy.deepcopy(self._model.state_dict())
                 history.mark_best(epoch)
                 logger.debug("New best validation loss %.6f at epoch %d", snapshot.legitimate_mse, epoch)
+            if epoch_callback is not None:
+                epoch_callback(record)
             if self._early_stopping.should_stop:
                 logger.info("Early stopping at epoch %d", epoch)
                 break
@@ -87,7 +105,7 @@ class AutoencoderTrainer:
         for batch_index, (batch,) in enumerate(loader, start=1):
             batch = batch.to(self._device, non_blocking=True)
             self._optimizer.zero_grad(set_to_none=True)
-            loss = self._loss_fn(self._model(batch), batch)
+            loss = self._loss_fn(self._model(self._corrupt(batch)), batch)
             self._ensure_finite(loss.item(), f"training loss at epoch {epoch}, batch {batch_index}")
             loss.backward()
             self._clip_gradients()
@@ -97,6 +115,12 @@ class AutoencoderTrainer:
         if total_samples == 0:
             raise TrainingError("Training data loader produced no batches")
         return total_loss / total_samples
+
+    def _corrupt(self, batch: torch.Tensor) -> torch.Tensor:
+        noise_std = self._config.input_noise_std
+        if noise_std == 0:
+            return batch
+        return batch + torch.randn_like(batch) * noise_std
 
     @staticmethod
     def _ensure_finite(value: float, description: str) -> None:
@@ -118,13 +142,15 @@ class AutoencoderTrainer:
 
     def _log(self, record: EpochRecord) -> None:
         fraud_mse = "n/a" if record.validation_fraud_mse is None else f"{record.validation_fraud_mse:.6f}"
+        recall = "n/a" if record.validation_fraud_recall is None else f"{record.validation_fraud_recall:.1%}"
         logger.info(
-            "Epoch %d/%d | train %.6f | val legit %.6f | val fraud %s | lr %.2e | %.1fs",
+            "Epoch %d/%d | train %.6f | val legit %.6f | val fraud %s | val recall %s | lr %.2e | %.1fs",
             record.epoch,
             self._config.epochs,
             record.train_loss,
             record.validation_loss,
             fraud_mse,
+            recall,
             record.learning_rate,
             record.duration_seconds,
         )

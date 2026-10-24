@@ -12,6 +12,7 @@ class EpochRecord(BaseModel):
     train_loss: float
     validation_loss: float
     validation_fraud_mse: Optional[float] = None
+    validation_fraud_recall: Optional[float] = None
     learning_rate: float
     duration_seconds: NonNegativeFloat
 

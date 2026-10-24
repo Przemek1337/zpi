@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 from torch.utils.data import DataLoader
 
 from fraud_detection.configuration.experiment_config import ExperimentConfig
-from fraud_detection.data.csv_transaction_loader import CsvTransactionLoader
+from fraud_detection.data.dataset_source import load_train_validation
 from fraud_detection.data.transaction_set import TransactionSet
 from fraud_detection.evaluation.reconstruction_error_scorer import ReconstructionErrorScorer
 from fraud_detection.exceptions import DataValidationError
 from fraud_detection.model.deep_autoencoder import DeepAutoencoder
 from fraud_detection.persistence.model_artifact_store import ModelArtifactStore
-from fraud_detection.training.autoencoder_trainer import AutoencoderTrainer
+from fraud_detection.training.autoencoder_trainer import AutoencoderTrainer, EpochCallback
 from fraud_detection.training.early_stopping import EarlyStopping
 from fraud_detection.training.optimizer_factory import create_optimizer, create_scheduler
 from fraud_detection.training.reconstruction_monitor import ReconstructionMonitor
@@ -30,37 +30,47 @@ class TrainingRunner:
         self._artifacts = ModelArtifactStore(config.output.directory)
 
     def run(self) -> TrainingHistory:
-        seed_everything(self._config.seed)
         device = resolve_device(self._config.device)
         logger.info("Using device: %s", device)
-
-        train, validation = self._load_data()
-        model = DeepAutoencoder(train.feature_count, self._config.model).to(device)
-        logger.info("Model built with %d trainable parameters", model.parameter_count)
-        logger.debug("Model architecture:\n%s", model)
-
-        history = self._build_trainer(model, device).fit(
-            self._train_loader(train, device),
-            self._build_monitor(validation, device),
-        )
+        train, validation = self.load_datasets()
+        model, history = self.train(train, validation, device)
         self._log_summary(history)
         self._save_artifacts(model, train.feature_names, history)
         return history
 
-    def _load_data(self) -> Tuple[TransactionSet, TransactionSet]:
+    def train(
+        self,
+        train: TransactionSet,
+        validation: TransactionSet,
+        device: torch.device,
+        epoch_callback: Optional[EpochCallback] = None,
+    ) -> Tuple[DeepAutoencoder, TrainingHistory]:
+        """Trains a fresh model on already loaded data without persisting anything."""
+        seed_everything(self._config.seed)
+        model = DeepAutoencoder(train.feature_count, self._config.model).to(device)
+        logger.info("Model built with %d trainable parameters", model.parameter_count)
+        logger.debug("Model architecture:\n%s", model)
+        history = self._build_trainer(model, device).fit(
+            self._train_loader(train, device),
+            self._build_monitor(validation, device),
+            epoch_callback,
+        )
+        return model, history
+
+    def load_datasets(self) -> Tuple[TransactionSet, TransactionSet]:
+        """Returns (legitimate-only training set, full validation set)."""
         data_config = self._config.data
-        loader = CsvTransactionLoader(data_config)
-        loaded_train = loader.load(data_config.train_path)
+        loaded_train, validation = load_train_validation(data_config)
         train = loaded_train.with_label(data_config.legitimate_label)
         if len(train) < len(loaded_train):
             logger.warning(
                 "Removed %d non-legitimate transactions from training set", len(loaded_train) - len(train)
             )
         if len(train) == 0:
+            source = data_config.splits_path or data_config.train_path
             raise DataValidationError(
-                f"{data_config.train_path}: no legitimate transactions (label {data_config.legitimate_label})"
+                f"{source}: no legitimate transactions (label {data_config.legitimate_label})"
             )
-        validation = loader.load(data_config.validation_path)
         self._ensure_matching_features(train, validation)
         logger.info("Training set: %d legitimate transactions", len(train))
         logger.info("Validation set: %d transactions, class counts %s", len(validation), validation.class_counts())
@@ -91,7 +101,12 @@ class TrainingRunner:
 
     def _build_monitor(self, validation: TransactionSet, device: torch.device) -> ReconstructionMonitor:
         scorer = ReconstructionErrorScorer(device, self._config.training.batch_size)
-        return ReconstructionMonitor(scorer, validation, self._config.data.legitimate_label)
+        return ReconstructionMonitor(
+            scorer,
+            validation,
+            self._config.data.legitimate_label,
+            self._config.evaluation.max_false_positive_rate,
+        )
 
     def _train_loader(self, train: TransactionSet, device: torch.device) -> DataLoader:
         batch_size = self._config.training.batch_size
@@ -113,10 +128,11 @@ class TrainingRunner:
             logger.warning("No epoch improved the validation loss")
             return
         logger.info(
-            "Best epoch %d: val legit MSE %.6f, val fraud MSE %s",
+            "Best epoch %d: val legit MSE %.6f, val fraud MSE %s, val fraud recall %s",
             best.epoch,
             best.validation_loss,
             "n/a" if best.validation_fraud_mse is None else f"{best.validation_fraud_mse:.6f}",
+            "n/a" if best.validation_fraud_recall is None else f"{best.validation_fraud_recall:.1%}",
         )
 
     def _save_artifacts(self, model: DeepAutoencoder, feature_names: Tuple[str, ...], history: TrainingHistory) -> None:

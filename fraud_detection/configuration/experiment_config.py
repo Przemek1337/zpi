@@ -29,11 +29,29 @@ class LoggingConfig(FrozenConfig):
 
 
 class DataConfig(FrozenConfig):
-    train_path: Path
-    validation_path: Path
+    # either a splits archive produced by the preprocessing notebook, or a pair of CSV files
+    splits_path: Optional[Path] = None
+    preparation_notebook: Optional[Path] = None
+    train_path: Optional[Path] = None
+    validation_path: Optional[Path] = None
     label_column: str = Field("Class", min_length=1)
     legitimate_label: int = 0
     drop_columns: Tuple[str, ...] = ()
+
+    @property
+    def uses_splits_archive(self) -> bool:
+        return self.splits_path is not None
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> DataConfig:
+        has_csv = self.train_path is not None or self.validation_path is not None
+        if self.uses_splits_archive == has_csv:
+            raise ValueError("set either splits_path or both train_path and validation_path")
+        if has_csv and (self.train_path is None or self.validation_path is None):
+            raise ValueError("train_path and validation_path must be set together")
+        if self.preparation_notebook is not None and not self.uses_splits_archive:
+            raise ValueError("preparation_notebook requires splits_path")
+        return self
 
     @model_validator(mode="after")
     def _label_column_is_kept(self) -> DataConfig:
@@ -76,12 +94,19 @@ class TrainingConfig(FrozenConfig):
     batch_size: PositiveInt = 256
     gradient_clip_norm: Optional[PositiveFloat] = 1.0
     num_workers: NonNegativeInt = 0
+    # denoising: std of Gaussian noise added to training inputs; the target stays the clean transaction
+    input_noise_std: NonNegativeFloat = 0.0
 
 
 class EarlyStoppingConfig(FrozenConfig):
     enabled: bool = True
     patience: PositiveInt = 10
     min_delta: NonNegativeFloat = 0.0
+
+
+class EvaluationConfig(FrozenConfig):
+    # fraud recall is reported at the threshold that keeps validation FPR strictly below this budget
+    max_false_positive_rate: float = Field(0.01, gt=0.0, lt=1.0)
 
 
 class OutputConfig(FrozenConfig):
@@ -98,4 +123,5 @@ class ExperimentConfig(FrozenConfig):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     early_stopping: EarlyStoppingConfig = Field(default_factory=EarlyStoppingConfig)
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)

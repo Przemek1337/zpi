@@ -1,0 +1,65 @@
+# Optuna hyperparameter search for the autoencoder, followed by training the best configuration.
+# Objective: validation fraud recall at the threshold keeping validation FPR below
+# evaluation.max_false_positive_rate of the base config (1%). The test split is never used here.
+#
+#   python tune_autoencoder.py --config config/autoencoder_tuning.yaml
+#
+# Re-running the same command resumes the study stored in study.storage.
+
+base_config: config/autoencoder_training.yaml  # data, seed, device, logging, final training budget
+
+study:
+  name: autoencoder-recall-at-fpr
+  storage: artifacts/tuning/study.journal
+  sampler_seed: 42
+  random_startup_trials: 20  # random exploration before TPE takes over
+
+budget:
+  timeout_hours: 9.0    # search time; running trials finish afterwards, then final training (~10 min)
+  max_trials: null      # optional cap on finished (complete + pruned) trials
+  parallel_workers: 3   # trials trained concurrently on the same GPU
+
+trial:
+  epochs: 60                  # per-trial epoch budget (final training uses the base config budget)
+  early_stopping_patience: 8
+
+pruning:
+  enabled: true
+  startup_trials: 10  # never prune before this many trials finished
+  warmup_epochs: 10   # never prune a trial before this epoch
+
+preflight:
+  require_gpu: true
+  smoke_trials: 3
+  smoke_epochs: 2
+  smoke_train_rows: 4096
+  smoke_validation_legitimate_rows: 4096
+  worker_start_timeout_seconds: 600
+
+final_training:
+  enabled: true
+
+output:
+  directory: artifacts/tuning
+  top_trials: 10
+
+# Every hyperparameter of the experiment config except seed and the epoch/early-stopping budget.
+# Narrow a range, or pin a value with a single-element choice / low == high.
+search_space:
+  hidden_layers: {low: 1, high: 4}
+  first_hidden_dim: {choices: [16, 24, 32, 48, 64, 96, 128]}
+  width_shrink: {low: 0.3, high: 1.0}    # each next encoder layer = previous * shrink (min latent_dim + 1)
+  latent_dim: {low: 2, high: 16}
+  activation: {choices: [relu, leaky_relu, elu, gelu, selu, tanh]}
+  dropout: {low: 0.0, high: 0.3}
+  batch_norm: {choices: [true, false]}
+  denoising: {choices: [true, false]}
+  input_noise_std: {low: 0.01, high: 0.5, log: true}  # used only when denoising is true
+  optimizer: {choices: [adam, adamw, sgd, rmsprop]}
+  learning_rate: {low: 1.0e-5, high: 1.0e-2, log: true}
+  weight_decay: {low: 1.0e-8, high: 1.0e-3, log: true}
+  batch_size: {choices: [128, 256, 512, 1024, 2048]}
+  gradient_clip_norm: {choices: [null, 0.5, 1.0, 5.0]}
+  scheduler_enabled: {choices: [true, false]}
+  scheduler_factor: {low: 0.1, high: 0.8}   # used only when scheduler_enabled is true
+  scheduler_patience: {low: 1, high: 8}

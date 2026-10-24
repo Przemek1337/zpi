@@ -62,3 +62,33 @@ def test_invalid_values_are_rejected(raw):
 def test_literal_names_match_registries():
     assert set(get_args(ActivationName)) == SUPPORTED_ACTIVATIONS
     assert set(get_args(OptimizerName)) == SUPPORTED_OPTIMIZERS
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {},
+        {"train_path": "a.csv"},
+        {"splits_path": "s.npz", "train_path": "a.csv", "validation_path": "b.csv"},
+        {"train_path": "a.csv", "validation_path": "b.csv", "preparation_notebook": "prep.ipynb"},
+    ],
+)
+def test_data_source_must_be_unambiguous(data):
+    with pytest.raises(ValidationError):
+        ExperimentConfig.model_validate({"data": data})
+
+
+def test_splits_archive_source_is_accepted():
+    config = ExperimentConfig.model_validate(
+        {"data": {"splits_path": "data/processed/splits.npz", "preparation_notebook": "data/prep.ipynb"}}
+    )
+
+    assert config.data.uses_splits_archive
+    assert config.training.input_noise_std == 0.0
+    assert config.evaluation.max_false_positive_rate == 0.01
+
+
+@pytest.mark.parametrize("budget", [0, 1, 1.5])
+def test_false_positive_budget_must_be_a_rate(budget):
+    with pytest.raises(ValidationError):
+        ExperimentConfig.model_validate(with_section("evaluation", {"max_false_positive_rate": budget}))
