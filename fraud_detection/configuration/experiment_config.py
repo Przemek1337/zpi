@@ -34,6 +34,8 @@ class DataConfig(FrozenConfig):
     preparation_notebook: Optional[Path] = None
     train_path: Optional[Path] = None
     validation_path: Optional[Path] = None
+    # CSV mode only: held-out test file, read exclusively by the one-off test evaluation
+    test_path: Optional[Path] = None
     label_column: str = Field("Class", min_length=1)
     legitimate_label: int = 0
     drop_columns: Tuple[str, ...] = ()
@@ -51,6 +53,8 @@ class DataConfig(FrozenConfig):
             raise ValueError("train_path and validation_path must be set together")
         if self.preparation_notebook is not None and not self.uses_splits_archive:
             raise ValueError("preparation_notebook requires splits_path")
+        if self.test_path is not None and self.uses_splits_archive:
+            raise ValueError("test_path is for CSV sources; the splits archive already contains the test split")
         return self
 
     @model_validator(mode="after")

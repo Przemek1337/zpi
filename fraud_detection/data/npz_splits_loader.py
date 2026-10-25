@@ -16,7 +16,7 @@ from fraud_detection.utils.validation_messages import describe_validation_error
 logger = get_logger(__name__)
 
 # split name in this project -> key suffix written by data/data_preprocessing.ipynb
-_SPLIT_KEYS = {"train": "train", "validation": "val"}
+_SPLIT_KEYS = {"train": "train", "validation": "val", "test": "test"}
 _FEATURE_NAMES_KEY = "feature_names"
 
 
@@ -27,16 +27,17 @@ class NpzSplitsLoader:
         self._config = config
 
     def load(self, path: Path) -> Tuple[TransactionSet, TransactionSet]:
+        train, validation = self.load_splits(path, ("train", "validation"))
+        logger.debug("Loaded %s: train %d rows, validation %d rows", path, len(train), len(validation))
+        return train, validation
+
+    def load_splits(self, path: Path, splits: Tuple[str, ...]) -> Tuple[TransactionSet, ...]:
         path = Path(path)
         archive = self._read_archive(path)
         feature_names = self._feature_names(archive, path)
         keep = [index for index, name in enumerate(feature_names) if name not in self._config.drop_columns]
         kept_names = tuple(feature_names[index] for index in keep)
-        train, validation = (
-            self._split(archive, split, keep, kept_names, path) for split in ("train", "validation")
-        )
-        logger.debug("Loaded %s: train %d rows, validation %d rows", path, len(train), len(validation))
-        return train, validation
+        return tuple(self._split(archive, split, keep, kept_names, path) for split in splits)
 
     @staticmethod
     def _read_archive(path: Path) -> Mapping[str, np.ndarray]:

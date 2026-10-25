@@ -7,6 +7,7 @@ from fraud_detection.data.csv_transaction_loader import CsvTransactionLoader
 from fraud_detection.data.notebook_preparation import prepare_splits
 from fraud_detection.data.npz_splits_loader import NpzSplitsLoader
 from fraud_detection.data.transaction_set import TransactionSet
+from fraud_detection.exceptions import DataLoadingError
 
 
 def ensure_prepared(config: DataConfig) -> bool:
@@ -23,3 +24,14 @@ def load_train_validation(config: DataConfig) -> Tuple[TransactionSet, Transacti
         return NpzSplitsLoader(config).load(config.splits_path)
     loader = CsvTransactionLoader(config)
     return loader.load(config.train_path), loader.load(config.validation_path)
+
+
+def load_test(config: DataConfig) -> TransactionSet:
+    """Held-out test split; only the final one-off evaluation may call this."""
+    if config.uses_splits_archive:
+        ensure_prepared(config)
+        (test,) = NpzSplitsLoader(config).load_splits(config.splits_path, ("test",))
+        return test
+    if config.test_path is None:
+        raise DataLoadingError("data.test_path is required to evaluate on the test set with CSV sources")
+    return CsvTransactionLoader(config).load(config.test_path)
